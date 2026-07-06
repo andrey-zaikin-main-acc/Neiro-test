@@ -16,7 +16,14 @@ DATA_DIR = Path("data")
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "runs": list_runs(), "models": ADAPTERS.keys()})
+    return templates.TemplateResponse(
+    request=request,
+    name="index.html",
+    context={
+        "runs": list_runs(),
+        "models": list(ADAPTERS.keys()),
+    },
+)
 
 
 @router.post("/upload")
