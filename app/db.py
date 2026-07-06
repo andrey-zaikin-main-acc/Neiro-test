@@ -26,7 +26,7 @@ def init_db() -> None:
             table_count INTEGER,
             input_text_tokens INTEGER,
             output_text_tokens INTEGER,
-            visual_input INTEGER NOT NULL DEFAULT 0,
+            visual_input TEXT NOT NULL DEFAULT 'не использовался',
             visual_tokens INTEGER,
             wall_clock_seconds REAL,
             raw_output_path TEXT,
@@ -34,6 +34,20 @@ def init_db() -> None:
             result TEXT NOT NULL,
             critical_errors INTEGER NOT NULL DEFAULT 0,
             final_score REAL,
+            input_summary TEXT,
+            short_result TEXT,
+            critical_issues TEXT,
+            suitability TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """)
+        _ensure_column(conn, "input_summary", "TEXT")
+        _ensure_column(conn, "short_result", "TEXT")
+        _ensure_column(conn, "critical_issues", "TEXT")
+        _ensure_column(conn, "suitability", "TEXT")
+
+
+def _ensure_column(conn: sqlite3.Connection, column_name: str, definition: str) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(test_runs)")}
+    if column_name not in existing:
+        conn.execute(f"ALTER TABLE test_runs ADD COLUMN {column_name} {definition}")

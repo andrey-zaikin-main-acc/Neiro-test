@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><title>KD AI Test Bench</title><style>body{font-family:Arial;margin:2rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.4rem}form{margin:0}.upload{margin-bottom:2rem;padding:1rem;border:1px solid #ddd}</style></head>
+<head><meta charset="utf-8"><title>KD AI Test Bench</title><style>body{font-family:Arial;margin:2rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.4rem;vertical-align:top}form{margin:0}.upload{margin-bottom:2rem;padding:1rem;border:1px solid #ddd}textarea{width:14rem;height:3.5rem}select,input{margin:.1rem}</style></head>
 <body>
 <h1>Стенд тестирования ИИ-обработки КД печатных плат</h1>
 <section class="upload">
@@ -14,16 +14,23 @@
 </section>
 <p><a href="/export.csv">Экспорт всех TestRun в CSV</a> · <a href="/api/test-runs">JSON</a></p>
 <table>
-<thead><tr><th>ID</th><th>Комплект</th><th>Модель</th><th>Файл</th><th>Страниц</th><th>Изобр.</th><th>Таблиц</th><th>Wall-clock</th><th>Tokens / ошибки / оценка</th><th>Создан</th></tr></thead>
+<thead><tr><th>ID</th><th>Комплект</th><th>Модель</th><th>Файл</th><th>Страниц</th><th>Изобр.</th><th>Таблиц</th><th>Visual input</th><th>Wall-clock</th><th>Карточка TestRun</th><th>Создан</th></tr></thead>
 <tbody>{% for run in runs %}<tr>
-<td>{{ run.id }}</td><td>{{ run.kit }}</td><td>{{ run.stage_model }}</td><td>{{ run.file_name }}</td><td>{{ run.page_count }}</td><td>{{ run.image_count }}</td><td>{{ run.table_count }}</td><td>{{ run.wall_clock_seconds }}</td>
+<td>{{ run.id }}</td><td>{{ run.kit }}</td><td>{{ run.stage_model }}</td><td>{{ run.file_name }}</td><td>{{ run.page_count }}</td><td>{{ run.image_count }}</td><td>{{ run.table_count if run.table_count is not none else 'не определено' }}</td><td>{{ run.visual_input }}</td><td>{{ run.wall_clock_seconds }}</td>
 <td><form action="/test-runs/{{ run.id }}/manual" method="post">
-<input name="input_text_tokens" type="number" placeholder="in" value="{{ run.input_text_tokens or '' }}" style="width:4rem">
-<input name="output_text_tokens" type="number" placeholder="out" value="{{ run.output_text_tokens or '' }}" style="width:4rem">
-<input name="visual_tokens" type="number" placeholder="visual" value="{{ run.visual_tokens or '' }}" style="width:4rem">
-<input name="critical_errors" type="number" placeholder="err" value="{{ run.critical_errors }}" style="width:4rem">
-<input name="final_score" type="number" step="0.01" placeholder="score" value="{{ run.final_score or '' }}" style="width:4rem">
-<input name="result" placeholder="result" value="{{ run.result }}" style="width:8rem"><button>OK</button></form></td>
+<div><input name="input_text_tokens" type="number" placeholder="in tokens" value="{{ run.input_text_tokens or '' }}" style="width:6rem">
+<input name="output_text_tokens" type="number" placeholder="out tokens" value="{{ run.output_text_tokens or '' }}" style="width:6rem">
+<input name="visual_tokens" type="number" placeholder="visual tokens" value="{{ run.visual_tokens or '' }}" style="width:7rem"></div>
+<div><textarea name="input_summary" placeholder="вход">{{ run.input_summary or '' }}</textarea>
+<textarea name="short_result" placeholder="краткий результат">{{ run.short_result or '' }}</textarea></div>
+<div><textarea name="critical_issues" placeholder="критические ошибки / галлюцинации">{{ run.critical_issues or '' }}</textarea></div>
+<div><input name="critical_errors" type="number" placeholder="err" value="{{ run.critical_errors }}" style="width:4rem">
+<input name="final_score" type="number" step="0.01" placeholder="score" value="{{ run.final_score or '' }}" style="width:5rem">
+<input name="result" placeholder="result" value="{{ run.result }}" style="width:8rem">
+<select name="suitability">
+<option value="" {% if not run.suitability %}selected{% endif %}>итог не выбран</option>
+{% for value in ['пригодно', 'частично пригодно', 'непригодно'] %}<option value="{{ value }}" {% if run.suitability == value %}selected{% endif %}>{{ value }}</option>{% endfor %}
+</select><button>OK</button></div></form></td>
 <td>{{ run.created_at }}</td>
 </tr>{% endfor %}</tbody>
 </table>
