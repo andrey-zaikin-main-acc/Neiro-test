@@ -10,3 +10,4 @@ venv/
 /data/raw_output/
 /data/normalized/
 /data/reports/
+*.egg-info/
