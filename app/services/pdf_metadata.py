@@ -15,5 +15,5 @@ def inspect_pdf(path: Path) -> dict:
         "file_size": path.stat().st_size,
         "page_count": len(reader.pages),
         "image_count": image_count,
-        "table_count": 0,
+        "table_count": None,
     }
