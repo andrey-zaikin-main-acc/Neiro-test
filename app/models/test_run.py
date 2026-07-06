@@ -24,6 +24,13 @@ class TestRunBase(BaseModel):
     short_result: str | None = None
     critical_issues: str | None = None
     suitability: str | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    execution_mode: str = "mock"
+    source_type: str | None = None
+    parent_run_id: int | None = None
+    prompt_version: str | None = None
 
 
 class TestRunCreate(TestRunBase):
@@ -41,6 +48,13 @@ class TestRunUpdate(BaseModel):
     short_result: str | None = None
     critical_issues: str | None = None
     suitability: str | None = None
+    provider: str | None = None
+    model_id: str | None = None
+    model_revision: str | None = None
+    execution_mode: str | None = None
+    source_type: str | None = None
+    parent_run_id: int | None = None
+    prompt_version: str | None = None
 
 
 class TestRun(TestRunBase):

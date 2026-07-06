@@ -3,7 +3,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from app.services.adapters import ADAPTERS
+from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES
 from app.services.normalization import normalize_processing_result, write_json
 from app.services.pdf_metadata import inspect_pdf
 from app.services.repository import create_run, export_runs_csv, list_runs, update_run
@@ -22,12 +22,14 @@ def index(request: Request):
     context={
         "runs": list_runs(),
         "models": list(ADAPTERS.keys()),
+        "execution_modes": EXECUTION_MODES,
+        "source_types": SOURCE_TYPES,
     },
 )
 
 
 @router.post("/upload")
-async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), file: UploadFile = File(...)):
+async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), execution_mode: str = Form("mock"), source_type: str | None = Form(None), parent_run_id: int | None = Form(None), prompt_version: str | None = Form(None), file: UploadFile = File(...)):
     if file.content_type not in {"application/pdf", "application/octet-stream"} and not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     original_filename = Path(file.filename).name
@@ -39,7 +41,14 @@ async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), file: U
     adapter = ADAPTERS.get(stage_model)
     if adapter is None:
         raise HTTPException(status_code=400, detail="Unknown stage/model")
-    raw, seconds = adapter.process(input_path, metadata)
+    if execution_mode not in EXECUTION_MODES:
+        raise HTTPException(status_code=400, detail="Unknown execution mode")
+    source_type = source_type or adapter.default_source_type
+    metadata = metadata | {"execution_mode": execution_mode, "source_type": source_type, "prompt_version": prompt_version}
+    try:
+        raw, seconds = adapter.process(input_path, metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     normalized = normalize_processing_result(raw)
     stem = Path(original_filename).stem
     output_name = f"{stem}-{stage_model}-{run_id}.json"
@@ -51,14 +60,17 @@ async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), file: U
         "kit": kit, "stage_model": stage_model, "file_name": original_filename, "file_count": 1,
         "page_count": metadata["page_count"], "image_count": metadata["image_count"], "table_count": metadata["table_count"],
         "visual_input": describe_visual_input(stage_model, metadata), "visual_tokens": None, "wall_clock_seconds": seconds,
-        "raw_output_path": str(raw_path), "normalized_output_path": str(normalized_path), "result": "mock_completed",
+        "raw_output_path": str(raw_path), "normalized_output_path": str(normalized_path), "result": raw.get("status", "mock_completed"),
         "critical_errors": 0,
+        "provider": adapter.provider, "model_id": adapter.model_id, "model_revision": adapter.model_revision,
+        "execution_mode": execution_mode, "source_type": source_type, "parent_run_id": parent_run_id,
+        "prompt_version": prompt_version or adapter.prompt_version,
     })
     return RedirectResponse("/", status_code=303)
 
 
 def describe_visual_input(stage_model: str, metadata: dict) -> str:
-    if stage_model != "qwen3-vl":
+    if stage_model not in {"qwen3-vl", "qwen3-vl-8b"}:
         return "не использовался"
     image_count = metadata.get("image_count") or 0
     page_count = metadata.get("page_count") or 0
@@ -81,7 +93,7 @@ def api_update_run(run_id: int, payload: TestRunUpdate):
 
 
 @router.post("/test-runs/{run_id}/manual")
-def manual_update(run_id: int, input_text_tokens: int | None = Form(None), output_text_tokens: int | None = Form(None), visual_tokens: int | None = Form(None), critical_errors: int | None = Form(None), final_score: float | None = Form(None), result: str | None = Form(None), input_summary: str | None = Form(None), short_result: str | None = Form(None), critical_issues: str | None = Form(None), suitability: str | None = Form(None)):
+def manual_update(run_id: int, input_text_tokens: int | None = Form(None), output_text_tokens: int | None = Form(None), visual_tokens: int | None = Form(None), critical_errors: int | None = Form(None), final_score: float | None = Form(None), result: str | None = Form(None), input_summary: str | None = Form(None), short_result: str | None = Form(None), critical_issues: str | None = Form(None), suitability: str | None = Form(None), provider: str | None = Form(None), model_id: str | None = Form(None), model_revision: str | None = Form(None), execution_mode: str | None = Form(None), source_type: str | None = Form(None), parent_run_id: int | None = Form(None), prompt_version: str | None = Form(None)):
     update_run(run_id, locals() | {"id": None})
     return RedirectResponse("/", status_code=303)
 

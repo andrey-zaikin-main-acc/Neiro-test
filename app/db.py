@@ -38,6 +38,13 @@ def init_db() -> None:
             short_result TEXT,
             critical_issues TEXT,
             suitability TEXT,
+            provider TEXT,
+            model_id TEXT,
+            model_revision TEXT,
+            execution_mode TEXT NOT NULL DEFAULT 'mock',
+            source_type TEXT,
+            parent_run_id INTEGER,
+            prompt_version TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -45,6 +52,13 @@ def init_db() -> None:
         _ensure_column(conn, "short_result", "TEXT")
         _ensure_column(conn, "critical_issues", "TEXT")
         _ensure_column(conn, "suitability", "TEXT")
+        _ensure_column(conn, "provider", "TEXT")
+        _ensure_column(conn, "model_id", "TEXT")
+        _ensure_column(conn, "model_revision", "TEXT")
+        _ensure_column(conn, "execution_mode", "TEXT NOT NULL DEFAULT 'mock'")
+        _ensure_column(conn, "source_type", "TEXT")
+        _ensure_column(conn, "parent_run_id", "INTEGER")
+        _ensure_column(conn, "prompt_version", "TEXT")
 
 
 def _ensure_column(conn: sqlite3.Connection, column_name: str, definition: str) -> None:
