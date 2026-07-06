@@ -1,0 +1,19 @@
+[project]
+name = "neiro-kd-testbench"
+version = "0.1.0"
+description = "MVP test bench for AI processing of PCB engineering documentation"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.7",
+  "pypdf>=4.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.2", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
