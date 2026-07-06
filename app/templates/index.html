@@ -8,15 +8,19 @@
 <form action="/upload" method="post" enctype="multipart/form-data">
 <label>Комплект: <input name="kit" placeholder="Комплект 1" required></label>
 <label>Этап/модель: <select name="stage_model">{% for model in models %}<option value="{{ model }}">{{ model }}</option>{% endfor %}</select></label>
+<label>Режим: <select name="execution_mode">{% for mode in execution_modes %}<option value="{{ mode }}">{{ mode }}</option>{% endfor %}</select></label>
+<label>Тип источника: <select name="source_type"><option value="">по умолчанию адаптера</option>{% for source_type in source_types %}<option value="{{ source_type }}">{{ source_type }}</option>{% endfor %}</select></label>
+<label>Parent run ID: <input name="parent_run_id" type="number" style="width:6rem"></label>
+<label>Prompt version: <input name="prompt_version" placeholder="v1" style="width:5rem"></label>
 <label>PDF: <input type="file" name="file" accept="application/pdf" required></label>
-<button type="submit">Запустить mock-тест</button>
+<button type="submit">Запустить тест</button>
 </form>
 </section>
 <p><a href="/export.csv">Экспорт всех TestRun в CSV</a> · <a href="/api/test-runs">JSON</a></p>
 <table>
-<thead><tr><th>ID</th><th>Комплект</th><th>Модель</th><th>Файл</th><th>Страниц</th><th>Изобр.</th><th>Таблиц</th><th>Visual input</th><th>Wall-clock</th><th>Карточка TestRun</th><th>Создан</th></tr></thead>
+<thead><tr><th>ID</th><th>Комплект</th><th>Модель</th><th>Provider</th><th>Mode</th><th>Source</th><th>Файл</th><th>Страниц</th><th>Изобр.</th><th>Таблиц</th><th>Visual input</th><th>Wall-clock</th><th>Карточка TestRun</th><th>Создан</th></tr></thead>
 <tbody>{% for run in runs %}<tr>
-<td>{{ run.id }}</td><td>{{ run.kit }}</td><td>{{ run.stage_model }}</td><td>{{ run.file_name }}</td><td>{{ run.page_count }}</td><td>{{ run.image_count }}</td><td>{{ run.table_count if run.table_count is not none else 'не определено' }}</td><td>{{ run.visual_input }}</td><td>{{ run.wall_clock_seconds }}</td>
+<td>{{ run.id }}</td><td>{{ run.kit }}</td><td>{{ run.stage_model }}<br><small>{{ run.model_id or "" }} {{ run.model_revision or "" }}</small></td><td>{{ run.provider or "" }}</td><td>{{ run.execution_mode or "mock" }}</td><td>{{ run.source_type or "" }}<br><small>parent: {{ run.parent_run_id or "—" }}; prompt: {{ run.prompt_version or "—" }}</small></td><td>{{ run.file_name }}</td><td>{{ run.page_count }}</td><td>{{ run.image_count }}</td><td>{{ run.table_count if run.table_count is not none else 'не определено' }}</td><td>{{ run.visual_input }}</td><td>{{ run.wall_clock_seconds }}</td>
 <td><form action="/test-runs/{{ run.id }}/manual" method="post">
 <div><input name="input_text_tokens" type="number" placeholder="in tokens" value="{{ run.input_text_tokens or '' }}" style="width:6rem">
 <input name="output_text_tokens" type="number" placeholder="out tokens" value="{{ run.output_text_tokens or '' }}" style="width:6rem">
