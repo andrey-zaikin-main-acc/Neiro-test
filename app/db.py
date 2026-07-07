@@ -50,6 +50,8 @@ def init_db() -> None:
             prompt_eval_duration INTEGER,
             eval_duration INTEGER,
             quantization TEXT,
+            pipeline_run_id TEXT,
+            input_file_id TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -69,6 +71,21 @@ def init_db() -> None:
         _ensure_column(conn, "prompt_eval_duration", "INTEGER")
         _ensure_column(conn, "eval_duration", "INTEGER")
         _ensure_column(conn, "quantization", "TEXT")
+        _ensure_column(conn, "pipeline_run_id", "TEXT")
+        _ensure_column(conn, "input_file_id", "TEXT")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            id TEXT PRIMARY KEY, kit TEXT NOT NULL, status TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+            total_wall_clock_seconds REAL, final_report_json_path TEXT, final_report_md_path TEXT, error_message TEXT
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS input_files (
+            id TEXT PRIMARY KEY, pipeline_run_id TEXT NOT NULL, original_filename TEXT NOT NULL, saved_path TEXT NOT NULL,
+            extension TEXT, mime_type TEXT, file_size_bytes INTEGER, detected_document_type TEXT, page_count INTEGER,
+            sheet_count INTEGER, image_count INTEGER, table_count INTEGER, processing_status TEXT, error_message TEXT
+        )
+        """)
 
 
 def _ensure_column(conn: sqlite3.Connection, column_name: str, definition: str) -> None:

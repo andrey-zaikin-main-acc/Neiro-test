@@ -6,8 +6,9 @@ from fastapi.templating import Jinja2Templates
 from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES, DEFAULT_OLLAMA_BASE_URL, check_ollama_available
 from app.services.normalization import normalize_processing_result, write_json
 from app.services.pdf_metadata import inspect_file
-from app.services.repository import create_run, export_runs_csv, list_runs, update_run
+from app.services.repository import create_run, export_runs_csv, list_runs, update_run, create_pipeline_run, create_input_file, list_pipeline_runs
 from app.models.test_run import TestRunUpdate
+from app.services.pipeline import process_pipeline, inventory_file, SUPPORTED
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -21,6 +22,7 @@ def index(request: Request):
     name="index.html",
     context={
         "runs": list_runs(),
+        "pipeline_runs": list_pipeline_runs(),
         "models": list(ADAPTERS.keys()),
         "execution_modes": EXECUTION_MODES,
         "source_types": SOURCE_TYPES,
@@ -70,6 +72,60 @@ async def upload_file(kit: str = Form(...), stage_model: str = Form(...), execut
         "quantization": raw.get("quantization") or adapter.quantization,
     })
     return RedirectResponse("/", status_code=303)
+
+
+@router.post("/pipeline/full-test")
+async def full_kit_test(kit: str = Form(...), files: list[UploadFile] = File(...)):
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    pipeline_seed = uuid4().hex
+    saved = []
+    input_dir = DATA_DIR / "input" / pipeline_seed
+    input_dir.mkdir(parents=True, exist_ok=True)
+    for upload in files:
+        original_filename = Path(upload.filename).name
+        ext = Path(original_filename).suffix.lower()
+        if ext not in SUPPORTED:
+            raise HTTPException(status_code=400, detail=f"Unsupported file format: {ext}")
+        file_id = uuid4().hex
+        content = await upload.read()
+        saved_path = input_dir / f"{Path(original_filename).stem}-{file_id}{ext}"
+        saved_path.write_bytes(content)
+        saved.append({
+            "id": file_id, "pipeline_run_id": pipeline_seed, "original_filename": original_filename,
+            "saved_path": str(saved_path), "extension": ext, "mime_type": upload.content_type,
+            "file_size_bytes": len(content),
+        })
+    try:
+        report = process_pipeline(kit, saved, DATA_DIR)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create final report: {exc}") from exc
+    create_pipeline_run(report["pipeline_run"])
+    for f in report["composition"]:
+        create_input_file(f | {"pipeline_run_id": report["pipeline_run"]["id"]})
+    return RedirectResponse(f"/pipeline/{report['pipeline_run']['id']}", status_code=303)
+
+
+@router.get("/pipeline/{pipeline_run_id}", response_class=HTMLResponse)
+def pipeline_detail(request: Request, pipeline_run_id: str):
+    report_path = DATA_DIR / "pipeline_runs" / pipeline_run_id / "final_report.json"
+    if not report_path.exists():
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    import json
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    return templates.TemplateResponse(request=request, name="pipeline.html", context={"report": report})
+
+
+@router.get("/pipeline/{pipeline_run_id}/final_report.json")
+def download_final_json(pipeline_run_id: str):
+    path = DATA_DIR / "pipeline_runs" / pipeline_run_id / "final_report.json"
+    return FileResponse(path, media_type="application/json", filename="final_report.json")
+
+
+@router.get("/pipeline/{pipeline_run_id}/final_report.md")
+def download_final_md(pipeline_run_id: str):
+    path = DATA_DIR / "pipeline_runs" / pipeline_run_id / "final_report.md"
+    return FileResponse(path, media_type="text/markdown", filename="final_report.md")
 
 
 def describe_visual_input(stage_model: str, metadata: dict, raw: dict | None = None) -> str:
