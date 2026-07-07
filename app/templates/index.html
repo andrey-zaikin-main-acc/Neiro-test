@@ -4,7 +4,7 @@
 <body>
 <h1>Стенд тестирования ИИ-обработки КД печатных плат</h1>
 <section class="upload">
-<h2>Загрузка файла</h2>
+<h2>Загрузка PDF / одиночного файла</h2>
 <p>Ollama: {% if ollama_status.available %}доступна{% else %}недоступна — {{ ollama_status.message }}{% endif %} <button type="button" id="check-ollama">Проверить Ollama</button> <span id="ollama-result"></span></p>
 {% if ollama_status.available %}
 <p><small>Найдены модели: {{ ollama_status.models|join(', ') if ollama_status.models else 'нет' }}. {% if ollama_status.missing_models %}Отсутствуют ожидаемые модели: {{ ollama_status.missing_models|join(', ') }}.{% endif %}</small></p>
@@ -20,6 +20,19 @@
 <button type="submit">Запустить тест</button>
 </form>
 </section>
+
+<section class="upload">
+<h2>Полный тест комплекта КД</h2>
+<form action="/pipeline/full-test" method="post" enctype="multipart/form-data">
+<label>Название комплекта: <input name="kit" placeholder="КД1" required></label>
+<label>Файлы: <input id="kit-files" type="file" name="files" accept=".pdf,.docx,.xlsx,.xls,application/pdf" multiple required></label>
+<button type="submit">Запустить полный тест</button>
+</form>
+<ul id="selected-files"></ul>
+<h3>Запуски комплектов</h3>
+<ul>{% for pr in pipeline_runs %}<li><a href="/pipeline/{{ pr.id }}">{{ pr.kit }} — {{ pr.status }}</a></li>{% else %}<li>Пока нет запусков</li>{% endfor %}</ul>
+</section>
+
 <p><a href="/export.csv">Экспорт всех TestRun в CSV</a> · <a href="/api/test-runs">JSON</a></p>
 <table>
 <thead><tr><th>ID</th><th>Комплект</th><th>Модель</th><th>Provider</th><th>Mode</th><th>Source</th><th>Файл</th><th>Страниц</th><th>Изобр.</th><th>Таблиц</th><th>Visual input</th><th>Wall-clock</th><th>Карточка TestRun</th><th>Создан</th></tr></thead>
@@ -56,5 +69,18 @@ document.getElementById('check-ollama').addEventListener('click', async () => {
     out.textContent = status.message || 'Ollama недоступна по адресу http://127.0.0.1:11434';
   }
 });
+
+const kitFiles = document.getElementById('kit-files');
+if (kitFiles) {
+  kitFiles.addEventListener('change', () => {
+    const list = document.getElementById('selected-files');
+    list.innerHTML = '';
+    Array.from(kitFiles.files).forEach(file => {
+      const li = document.createElement('li');
+      li.textContent = `${file.name} (${file.size} bytes)`;
+      list.appendChild(li);
+    });
+  });
+}
 </script>
 </body></html>

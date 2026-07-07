@@ -1,0 +1,9 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>PipelineRun</title><style>body{font-family:Arial;margin:2rem}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:.4rem;vertical-align:top}pre{background:#f7f7f7;padding:1rem;overflow:auto}</style></head><body>
+<h1>Полный тест комплекта {{ report.pipeline_run.kit }}</h1>
+<p>Статус комплекта: <b>{{ report.pipeline_run.status }}</b></p>
+<p><a href="/pipeline/{{ report.pipeline_run.id }}/final_report.json">Скачать final_report.json</a> · <a href="/pipeline/{{ report.pipeline_run.id }}/final_report.md">Скачать final_report.md</a> · <a href="/">На главную</a></p>
+<h2>Файлы и этапы</h2><table><tr><th>Файл</th><th>Формат</th><th>Страниц</th><th>Листов</th><th>Таблиц</th><th>Изобр.</th><th>Этапы</th></tr>
+{% for f in report.composition %}<tr><td>{{ f.original_filename }}</td><td>{{ f.extension }}</td><td>{{ f.page_count }}</td><td>{{ f.sheet_count }}</td><td>{{ f.table_count if f.table_count is not none else 'не определено' }}</td><td>{{ f.image_count }}</td><td>{% for r in report.per_file_results if r.input_file_id == f.id %}{% for s in r.stages %}{{ s.stage }}: {{ s.status }}<br>{% endfor %}{% endfor %}</td></tr>{% endfor %}</table>
+<h2>Итоговый отчёт</h2><pre>{{ report.final }}</pre>
+<h2>Raw output</h2>{% for r in report.per_file_results %}{% for s in r.stages %}{% if s.stage in ['PP-DocLayout-L','MinerU 2.5'] %}<div>{{ r.file }} — {{ s.stage }}: {{ s.status }}</div>{% endif %}{% endfor %}{% endfor %}
+</body></html>

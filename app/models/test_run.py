@@ -36,6 +36,8 @@ class TestRunBase(BaseModel):
     prompt_eval_duration: int | None = None
     eval_duration: int | None = None
     quantization: str | None = None
+    pipeline_run_id: str | None = None
+    input_file_id: str | None = None
 
 
 class TestRunCreate(TestRunBase):
@@ -65,6 +67,8 @@ class TestRunUpdate(BaseModel):
     prompt_eval_duration: int | None = None
     eval_duration: int | None = None
     quantization: str | None = None
+    pipeline_run_id: str | None = None
+    input_file_id: str | None = None
 
 
 class TestRun(TestRunBase):
