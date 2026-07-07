@@ -2,7 +2,7 @@ import csv
 from pathlib import Path
 from app.db import get_connection
 
-FIELDS = ["id","kit","stage_model","file_name","file_count","page_count","image_count","table_count","input_text_tokens","output_text_tokens","visual_input","visual_tokens","wall_clock_seconds","raw_output_path","normalized_output_path","result","critical_errors","final_score","input_summary","short_result","critical_issues","suitability","provider","model_id","model_revision","execution_mode","source_type","parent_run_id","prompt_version","created_at"]
+FIELDS = ["id","kit","stage_model","file_name","file_count","page_count","image_count","table_count","input_text_tokens","output_text_tokens","visual_input","visual_tokens","wall_clock_seconds","raw_output_path","normalized_output_path","result","critical_errors","final_score","input_summary","short_result","critical_issues","suitability","provider","model_id","model_revision","execution_mode","source_type","parent_run_id","prompt_version","total_duration","load_duration","prompt_eval_duration","eval_duration","quantization","created_at"]
 
 
 def create_run(data: dict) -> int:

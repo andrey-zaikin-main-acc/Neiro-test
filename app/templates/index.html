@@ -4,7 +4,8 @@
 <body>
 <h1>Стенд тестирования ИИ-обработки КД печатных плат</h1>
 <section class="upload">
-<h2>Загрузка PDF</h2>
+<h2>Загрузка файла</h2>
+<p>Ollama: {% if ollama_status.available %}доступна{% else %}недоступна — {{ ollama_status.message }}{% endif %} <button type="button" id="check-ollama">Проверить Ollama</button> <span id="ollama-result"></span></p>
 <form action="/upload" method="post" enctype="multipart/form-data">
 <label>Комплект: <input name="kit" placeholder="Комплект 1" required></label>
 <label>Этап/модель: <select name="stage_model">{% for model in models %}<option value="{{ model }}">{{ model }}</option>{% endfor %}</select></label>
@@ -12,7 +13,7 @@
 <label>Тип источника: <select name="source_type"><option value="">по умолчанию адаптера</option>{% for source_type in source_types %}<option value="{{ source_type }}">{{ source_type }}</option>{% endfor %}</select></label>
 <label>Parent run ID: <input name="parent_run_id" type="number" style="width:6rem"></label>
 <label>Prompt version: <input name="prompt_version" placeholder="v1" style="width:5rem"></label>
-<label>PDF: <input type="file" name="file" accept="application/pdf" required></label>
+<label>Файл: <input type="file" name="file" accept="application/pdf,image/png,image/jpeg,.json" required></label>
 <button type="submit">Запустить тест</button>
 </form>
 </section>
@@ -38,4 +39,13 @@
 <td>{{ run.created_at }}</td>
 </tr>{% endfor %}</tbody>
 </table>
+<script>
+document.getElementById('check-ollama').addEventListener('click', async () => {
+  const out = document.getElementById('ollama-result');
+  out.textContent = 'проверка...';
+  const response = await fetch('/api/ollama/status');
+  const status = await response.json();
+  out.textContent = status.available ? 'Ollama доступна' : (status.message || 'Ollama недоступна по адресу http://127.0.0.1:11434');
+});
+</script>
 </body></html>

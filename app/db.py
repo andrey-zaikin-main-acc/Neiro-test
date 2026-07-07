@@ -45,6 +45,11 @@ def init_db() -> None:
             source_type TEXT,
             parent_run_id INTEGER,
             prompt_version TEXT,
+            total_duration INTEGER,
+            load_duration INTEGER,
+            prompt_eval_duration INTEGER,
+            eval_duration INTEGER,
+            quantization TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -59,6 +64,11 @@ def init_db() -> None:
         _ensure_column(conn, "source_type", "TEXT")
         _ensure_column(conn, "parent_run_id", "INTEGER")
         _ensure_column(conn, "prompt_version", "TEXT")
+        _ensure_column(conn, "total_duration", "INTEGER")
+        _ensure_column(conn, "load_duration", "INTEGER")
+        _ensure_column(conn, "prompt_eval_duration", "INTEGER")
+        _ensure_column(conn, "eval_duration", "INTEGER")
+        _ensure_column(conn, "quantization", "TEXT")
 
 
 def _ensure_column(conn: sqlite3.Connection, column_name: str, definition: str) -> None:
