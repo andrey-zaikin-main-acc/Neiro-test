@@ -157,3 +157,26 @@ def test_final_report_contains_qwen_tokens_and_times(tmp_path, monkeypatch):
     assert 'Статус сформирован по ограниченному cleaned JSON без результатов MinerU; требует повторной проверки после подключения MinerU' in md
     assert 'Перечень элементов обнаружен в PDF' in md or 'Перечень элементов в PDF не обнаружен' in md
     assert 'Отдельный BOM-файл не загружен и не подтверждён' in md
+
+
+def test_qwen3_timeout_keeps_qwen25_completed_and_visual_input(tmp_path, monkeypatch):
+    configure(tmp_path, monkeypatch)
+    monkeypatch.setenv('QWEN3_VL_TIMEOUT_SECONDS', '600')
+    import app.services.adapters as adapters
+
+    def fake_post(base_url, payload, timeout=120.0):
+        if payload['model'] == 'qwen3-vl:8b':
+            raise adapters.OllamaResponseTimeoutError(f"Модель была доступна, но не завершила ответ за {timeout:g} секунд")
+        return fake_ollama_raw()
+
+    monkeypatch.setattr(adapters, 'post_ollama_chat', fake_post)
+    r = pipeline.process_pipeline('КД1', [item(pdf(tmp_path/'kd1.pdf'))], tmp_path/'data')
+    report = json.loads(Path(r['pipeline_run']['final_report_json_path']).read_text(encoding='utf-8'))
+    by_stage = {s['stage']: s for s in report['stage_results']}
+
+    assert by_stage['Qwen3-VL-8B']['status'] == 'failed'
+    assert by_stage['Qwen3-VL-8B']['error_type'] == 'response_timeout'
+    assert by_stage['Qwen3-VL-8B']['error'] == 'Модель была доступна, но не завершила ответ за 600 секунд'
+    assert by_stage['Qwen3-VL-8B']['visual_input'] == {'image_count': 1, 'width': 144, 'height': 144}
+    assert report['model_results']['qwen3_vl_8b'][0]['visual_input'] == {'image_count': 1, 'width': 144, 'height': 144}
+    assert by_stage['Qwen2.5-3B']['status'] == 'completed'

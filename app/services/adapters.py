@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import socket
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -14,9 +15,36 @@ from app.services.metrics import measure_wall_clock
 REMOTE_API_ERROR = "Для модели не настроен endpoint или API-ключ"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 OLLAMA_UNAVAILABLE_ERROR = "Ollama недоступна по адресу {url}. Запустите Ollama локально и проверьте модель. Ошибка: {error}"
+OLLAMA_RESPONSE_TIMEOUT_ERROR = "Модель была доступна, но не завершила ответ за {timeout:g} секунд"
+OLLAMA_MODEL_ERROR = "Ollama вернула ошибку модели или HTTP-ошибку: {error}"
 EXPECTED_OLLAMA_MODELS = ["qwen3-vl:8b", "qwen2.5:3b"]
 
 logger = logging.getLogger(__name__)
+
+
+class OllamaRequestError(Exception):
+    error_type = "model_error"
+
+
+class OllamaConnectionError(OllamaRequestError):
+    error_type = "connection_error"
+
+
+class OllamaResponseTimeoutError(OllamaRequestError):
+    error_type = "response_timeout"
+
+
+class OllamaModelError(OllamaRequestError):
+    error_type = "model_error"
+
+
+def _is_timeout_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(exc).lower() or "timeout" in str(exc).lower()
 
 
 def _ollama_opener() -> urllib.request.OpenerDirector:
@@ -87,11 +115,24 @@ def post_ollama_chat(base_url: str, payload: dict, timeout: float = 120.0) -> di
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with _ollama_opener().open(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict) and payload.get("error"):
+                raise OllamaModelError(OLLAMA_MODEL_ERROR.format(error=payload["error"]))
+            return payload
+    except urllib.error.HTTPError as exc:
+        error = str(exc)
+        logger.exception("Ollama chat model error for %s: %s", url, error)
+        raise OllamaModelError(OLLAMA_MODEL_ERROR.format(error=error)) from exc
+    except (urllib.error.URLError, TimeoutError, ConnectionError, socket.timeout) as exc:
         error = str(exc)
         logger.exception("Ollama chat request failed for %s: %s", url, error)
-        raise ConnectionError(OLLAMA_UNAVAILABLE_ERROR.format(url=base_url, error=error)) from exc
+        if _is_timeout_error(exc):
+            raise OllamaResponseTimeoutError(OLLAMA_RESPONSE_TIMEOUT_ERROR.format(timeout=timeout)) from exc
+        raise OllamaConnectionError(OLLAMA_UNAVAILABLE_ERROR.format(url=base_url, error=error)) from exc
+    except json.JSONDecodeError as exc:
+        error = str(exc)
+        logger.exception("Ollama chat response decode failed for %s: %s", url, error)
+        raise OllamaModelError(OLLAMA_MODEL_ERROR.format(error=error)) from exc
 
 
 class ProcessingAdapter(ABC):
@@ -182,13 +223,14 @@ class Qwen3VL8BAdapter(MockBOMMixin, ProcessingAdapter):
         width, height = image_dimensions(file_path)
         image_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
         prompt = metadata.get("prompt") or (
-            "Проанализируй только видимое изображение первой страницы КД. "
-            "Верни наблюдения: тип страницы, читаемость, видимые таблицы, чертёж/схема, сомнительные фрагменты. "
-            "Не извлекай BOM, не пересчитывай BOM и не делай выводы по невидимым данным."
+            "Верни только короткий структурированный JSON по видимому изображению первой страницы КД. "
+            "Поля JSON: page_type, has_drawing_or_scheme_or_table, readability, visible_markings, doubtful_fragments. "
+            "Не извлекай BOM, не пересчитывай BOM, не составляй перечень элементов и не давай длинное описание. "
+            "Если данных не видно, пиши коротко null или пустой список."
         )
-        request_payload = {"model": self.model_id, "stream": False, "messages": [{"role": "user", "content": prompt, "images": [image_b64]}]}
+        request_payload = {"model": self.model_id, "stream": False, "format": "json", "options": {"num_predict": 150}, "messages": [{"role": "user", "content": prompt, "images": [image_b64]}]}
         start = time.perf_counter()
-        raw = post_ollama_chat(os.getenv("QWEN3_VL_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload)
+        raw = post_ollama_chat(os.getenv("QWEN3_VL_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload, timeout=float(os.getenv("QWEN3_VL_TIMEOUT_SECONDS", "600")))
         seconds = time.perf_counter() - start
         return self.base_payload(file_path, metadata, source_type) | self.ollama_metrics(raw) | {"status": "completed", "raw_ollama_json": raw, "visual_tokens": None, "visual_input": {"image_count": 1, "width": width, "height": height}, "bom_rows": [], "notes": "Ollama local Qwen3-VL response saved as raw_ollama_json."}, seconds
 
@@ -214,7 +256,7 @@ class Qwen25_3BAdapter(ProcessingAdapter):
         prompt = "Используй только очищенный JSON. Не извлекай и не пересчитывай BOM. Верни только: статус комплекта, найденные документы, неподтверждённые документы, риски, вопросы клиенту, краткая рекомендация.\n" + text
         request_payload = {"model": self.model_id, "stream": False, "format": "json", "messages": [{"role": "user", "content": prompt}]}
         start = time.perf_counter()
-        raw = post_ollama_chat(os.getenv("QWEN25_3B_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload)
+        raw = post_ollama_chat(os.getenv("QWEN25_3B_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload, timeout=float(os.getenv("QWEN25_3B_TIMEOUT_SECONDS", "120")))
         seconds = time.perf_counter() - start
         return self.base_payload(file_path, metadata, source_type) | {"status": "completed", "raw_ollama_json": raw, "allowed_tasks": self.allowed_tasks, "input_text_tokens": raw.get("prompt_eval_count"), "output_text_tokens": raw.get("eval_count"), "total_duration": raw.get("total_duration"), "load_duration": raw.get("load_duration"), "prompt_eval_duration": raw.get("prompt_eval_duration"), "eval_duration": raw.get("eval_duration"), "bom_rows": [], "notes": "Статус сформирован по ограниченному cleaned JSON без результатов MinerU; требует повторной проверки после подключения MinerU"}, seconds
 
