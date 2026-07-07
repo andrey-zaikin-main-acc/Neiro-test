@@ -31,6 +31,14 @@ class FakeHTTPResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class FakeOpener:
+    def __init__(self, handler):
+        self.handler = handler
+
+    def open(self, request, timeout=120):
+        return self.handler(request, timeout=timeout)
+
+
 def mock_ollama(monkeypatch, payload=None):
     payload = payload or {
         "message": {"content": "{}"},
@@ -45,7 +53,40 @@ def mock_ollama(monkeypatch, payload=None):
     def fake_urlopen(request, timeout=120):
         return FakeHTTPResponse(payload)
 
-    monkeypatch.setattr(adapters.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(adapters, "_ollama_opener", lambda: FakeOpener(fake_urlopen))
+
+
+def test_check_ollama_available_uses_api_tags_and_reports_models(monkeypatch):
+    captured = {}
+
+    def fake_tags(request, timeout=5.0):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["timeout"] = timeout
+        return FakeHTTPResponse({"models": [{"name": "qwen3-vl:8b"}, {"name": "qwen2.5:3b"}]})
+
+    monkeypatch.setattr(adapters, "_ollama_opener", lambda: FakeOpener(fake_tags))
+
+    status = adapters.check_ollama_available()
+
+    assert captured == {"url": "http://127.0.0.1:11434/api/tags", "method": "GET", "timeout": 5.0}
+    assert status["available"] is True
+    assert status["message"] == "Ollama доступна"
+    assert status["models"] == ["qwen3-vl:8b", "qwen2.5:3b"]
+    assert status["missing_models"] == []
+
+
+def test_check_ollama_available_keeps_api_available_when_expected_model_missing(monkeypatch):
+    def fake_tags(request, timeout=5.0):
+        return FakeHTTPResponse({"models": [{"name": "qwen3-vl:8b"}]})
+
+    monkeypatch.setattr(adapters, "_ollama_opener", lambda: FakeOpener(fake_tags))
+
+    status = adapters.check_ollama_available()
+
+    assert status["available"] is True
+    assert status["models"] == ["qwen3-vl:8b"]
+    assert status["missing_models"] == ["qwen2.5:3b"]
 
 
 def test_qwen3_vl_accepts_image_and_transfers_tokens_and_durations(tmp_path, monkeypatch):
@@ -122,7 +163,7 @@ def test_ollama_unavailable_returns_clear_error(tmp_path, monkeypatch):
     def unavailable(request, timeout=120):
         raise urllib.error.URLError("connection refused")
 
-    monkeypatch.setattr(adapters.urllib.request, "urlopen", unavailable)
+    monkeypatch.setattr(adapters, "_ollama_opener", lambda: FakeOpener(unavailable))
     with TestClient(app) as client:
         response = client.post(
             "/upload",

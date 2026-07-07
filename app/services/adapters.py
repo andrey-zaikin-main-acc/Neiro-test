@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -12,17 +13,51 @@ from app.services.metrics import measure_wall_clock
 
 REMOTE_API_ERROR = "Для модели не настроен endpoint или API-ключ"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-OLLAMA_UNAVAILABLE_ERROR = "Ollama недоступна по адресу {url}. Запустите Ollama локально и проверьте модель."
+OLLAMA_UNAVAILABLE_ERROR = "Ollama недоступна по адресу {url}. Запустите Ollama локально и проверьте модель. Ошибка: {error}"
+EXPECTED_OLLAMA_MODELS = ["qwen3-vl:8b", "qwen2.5:3b"]
+
+logger = logging.getLogger(__name__)
 
 
-def check_ollama_available(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout: float = 2.0) -> dict:
+def _ollama_opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _extract_ollama_model_names(payload: dict) -> list[str]:
+    models = payload.get("models", [])
+    names = []
+    for model in models:
+        if isinstance(model, dict) and isinstance(model.get("name"), str):
+            names.append(model["name"])
+    return names
+
+
+def check_ollama_available(base_url: str = DEFAULT_OLLAMA_BASE_URL, timeout: float = 5.0) -> dict:
     url = f"{base_url.rstrip('/')}/api/tags"
     request = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return {"available": True, "status_code": response.status, "base_url": base_url}
-    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        return {"available": False, "base_url": base_url, "error": str(exc), "message": OLLAMA_UNAVAILABLE_ERROR.format(url=base_url)}
+        with _ollama_opener().open(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            found_models = _extract_ollama_model_names(payload)
+            missing_models = [model for model in EXPECTED_OLLAMA_MODELS if model not in found_models]
+            return {
+                "available": True,
+                "status_code": response.status,
+                "base_url": base_url,
+                "models": found_models,
+                "expected_models": EXPECTED_OLLAMA_MODELS,
+                "missing_models": missing_models,
+                "message": "Ollama доступна",
+            }
+    except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
+        error = str(exc)
+        logger.warning("Ollama availability check failed for %s: %s", url, error)
+        return {
+            "available": False,
+            "base_url": base_url,
+            "error": error,
+            "message": OLLAMA_UNAVAILABLE_ERROR.format(url=base_url, error=error),
+        }
 
 
 def image_dimensions(path: Path) -> tuple[int | None, int | None]:
@@ -51,10 +86,12 @@ def post_ollama_chat(base_url: str, payload: dict, timeout: float = 120.0) -> di
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _ollama_opener().open(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
-        raise ConnectionError(OLLAMA_UNAVAILABLE_ERROR.format(url=base_url)) from exc
+        error = str(exc)
+        logger.exception("Ollama chat request failed for %s: %s", url, error)
+        raise ConnectionError(OLLAMA_UNAVAILABLE_ERROR.format(url=base_url, error=error)) from exc
 
 
 class ProcessingAdapter(ABC):
