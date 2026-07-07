@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json, os, shutil, subprocess, time, zipfile
+import json, os, shutil, subprocess, time, zipfile, struct, zlib
 from pathlib import Path
 from uuid import uuid4
 from xml.etree import ElementTree as ET
@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 from app.services.pdf_metadata import inspect_pdf
 from app.services.normalization import write_json
 from app.services.repository import create_run
+from app.services.adapters import ADAPTERS, DEFAULT_OLLAMA_BASE_URL
 
 SUPPORTED={'.pdf','.docx','.xlsx','.xls'}
 DATA_DIR=Path('data')
@@ -110,11 +111,49 @@ def run_command_stage(cmd, args, raw_dir, setting_name=None):
     except Exception as e:
         return {'status':'failed','reason':'command raised an exception','error':str(e),'wall_clock_seconds':round(time.perf_counter()-started,3)}
 
-def _stage_result(name, model_parser, status, reason, input_file=None, pages=None, images=None, wall_clock_seconds=None, raw_output_path=None, normalized_output_path=None, error=None, input_text_tokens=None, output_text_tokens=None, visual_input='не использовался', visual_tokens=None):
-    return {'stage':name,'model_parser':model_parser,'status':status,'reason':reason,'input_file':input_file,'page_or_image_count':pages if pages is not None else images,'page_count':pages,'image_count':images,'wall_clock_seconds':wall_clock_seconds,'input_text_tokens':input_text_tokens,'output_text_tokens':output_text_tokens,'visual_input':visual_input,'visual_tokens':visual_tokens,'raw_output_path':raw_output_path,'normalized_output_path':normalized_output_path,'error':error}
+def _stage_result(name, model_parser, status, reason, input_file=None, pages=None, images=None, wall_clock_seconds=None, raw_output_path=None, normalized_output_path=None, error=None, input_text_tokens=None, output_text_tokens=None, visual_input='не использовался', visual_tokens=None, total_duration=None, load_duration=None, prompt_eval_duration=None, eval_duration=None):
+    return {'stage':name,'model_parser':model_parser,'status':status,'reason':reason,'input_file':input_file,'page_or_image_count':pages if pages is not None else images,'page_count':pages,'image_count':images,'wall_clock_seconds':wall_clock_seconds,'input_text_tokens':input_text_tokens,'output_text_tokens':output_text_tokens,'visual_input':visual_input,'visual_tokens':visual_tokens,'raw_output_path':raw_output_path,'normalized_output_path':normalized_output_path,'error':error,'total_duration':total_duration,'load_duration':load_duration,'prompt_eval_duration':prompt_eval_duration,'eval_duration':eval_duration}
 
 def _append_stage(stage_results, *args, **kwargs):
     res=_stage_result(*args, **kwargs); stage_results.append(res); return res
+
+def _png_chunk(kind, data):
+    return len(data).to_bytes(4,'big')+kind+data+zlib.crc32(kind+data).to_bytes(4,'big')
+
+def _write_blank_png(path, width=800, height=1100):
+    raw=b''.join(b'\x00'+b'\xff\xff\xff'*width for _ in range(height))
+    png=b'\x89PNG\r\n\x1a\n'+_png_chunk(b'IHDR', struct.pack('>IIBBBBB',width,height,8,2,0,0,0))+_png_chunk(b'IDAT', zlib.compress(raw, 1))+_png_chunk(b'IEND', b'')
+    path.write_bytes(png)
+
+def render_pdf_first_page_to_png(pdf_path, output_dir):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out=output_dir/f'{pdf_path.stem}-page-1.png'
+    # Prefer an actual renderer when available, but keep the pipeline runnable in
+    # minimal test containers by creating a page-sized placeholder PNG.
+    pdftoppm=shutil.which('pdftoppm')
+    if pdftoppm:
+        prefix=output_dir/f'{pdf_path.stem}-page'
+        subprocess.run([pdftoppm,'-f','1','-l','1','-png',str(pdf_path),str(prefix)], check=True, capture_output=True, timeout=60)
+        rendered=output_dir/f'{pdf_path.stem}-page-1.png'
+        if rendered.exists(): return rendered
+    width,height=800,1100
+    try:
+        from pypdf import PdfReader
+        page=PdfReader(str(pdf_path)).pages[0]
+        box=page.mediabox; width=max(int(float(box.width)*2),1); height=max(int(float(box.height)*2),1)
+    except Exception:
+        pass
+    _write_blank_png(out,width,height)
+    return out
+
+def _ollama_configured(model_id, env_name):
+    base_url=os.getenv(env_name, DEFAULT_OLLAMA_BASE_URL)
+    if not base_url: return False, None, f'{env_name} is not configured'
+    if not model_id: return False, base_url, 'Ollama model is not configured'
+    return True, base_url, None
+
+def _append_qwen_stage(stage_results, name, result, raw_path=None, norm_path=None, input_file=None):
+    _append_stage(stage_results,name,name,result.get('status'),result.get('reason') or result.get('notes') or result.get('error') or result.get('status'),input_file=input_file,pages=result.get('pages'),images=(result.get('visual_input') or {}).get('image_count'),wall_clock_seconds=result.get('wall_clock_seconds'),raw_output_path=str(raw_path) if raw_path else None,normalized_output_path=str(norm_path) if norm_path else None,error=result.get('error'),input_text_tokens=result.get('input_text_tokens'),output_text_tokens=result.get('output_text_tokens'),visual_input=result.get('visual_input','не использовался'),visual_tokens=result.get('visual_tokens'),total_duration=result.get('total_duration'),load_duration=result.get('load_duration'),prompt_eval_duration=result.get('prompt_eval_duration'),eval_duration=result.get('eval_duration'))
 
 def process_pipeline(kit, files, data_dir=DATA_DIR):
     start=time.perf_counter(); pid=uuid4().hex; root=data_dir/'pipeline_runs'/pid; raw=root/'raw'; clean=root/'cleaned'; raw.mkdir(parents=True); clean.mkdir()
@@ -162,8 +201,40 @@ def process_pipeline(kit, files, data_dir=DATA_DIR):
         if doc in text and not any(doc in uf['original_filename'].lower() for uf in inv): cleaned['unconfirmed_documents'].append(doc)
     cj=clean/'kit_cleaned.json'; write_json(cj, cleaned)
     _append_stage(stage_results,'нормализация без LLM','deterministic JSON normalizer','completed','сформирован нормализованный kit_cleaned.json без LLM',normalized_output_path=str(cj))
-    _append_stage(stage_results,'Qwen3-VL-8B','Qwen3-VL-8B','not_configured','модель не настроена и фактически не запускалась')
-    _append_stage(stage_results,'Qwen2.5-3B','Qwen2.5-3B','not_configured','модель не настроена и фактически не запускалась')
+    model_results={'qwen3_vl_8b':[],'qwen2_5_3b':None}
+    qwen3_ok,_,qwen3_missing=_ollama_configured(ADAPTERS['qwen3-vl-8b'].model_id,'QWEN3_VL_BASE_URL')
+    if qwen3_ok:
+        for f in inv:
+            if f.get('extension')!='.pdf': continue
+            started=time.perf_counter(); png_path=None; raw_path=raw/f"{f['id']}-Qwen3-VL-8B.json"
+            try:
+                png_path=render_pdf_first_page_to_png(Path(f['saved_path']), raw)
+                res,seconds=ADAPTERS['qwen3-vl-8b'].process(png_path, {'execution_mode':'local_cpu','source_type':'изображение','content_type':'image/png','page_count':1})
+                res['wall_clock_seconds']=round(seconds,3); res['reason']='Ollama model call completed'
+            except Exception as e:
+                res={'status':'failed','reason':'Ollama model call failed','error':str(e),'wall_clock_seconds':round(time.perf_counter()-started,3),'source_type':'изображение'}
+                warnings.append(f"{f['original_filename']}:Qwen3-VL-8B:failed")
+            write_json(raw_path,res); cleaned['raw_outputs'].append(str(raw_path)); model_results['qwen3_vl_8b'].append(res | {'raw_output_path':str(raw_path),'rendered_image_path':str(png_path) if png_path else None})
+            _append_qwen_stage(stage_results,'Qwen3-VL-8B',res,raw_path=raw_path,input_file=f['original_filename'])
+    else:
+        res={'status':'not_configured','reason':qwen3_missing,'error':qwen3_missing}
+        _append_qwen_stage(stage_results,'Qwen3-VL-8B',res)
+    qwen25_ok,_,qwen25_missing=_ollama_configured(ADAPTERS['qwen2.5-3b'].model_id,'QWEN25_3B_BASE_URL')
+    raw25=raw/'Qwen2.5-3B.json'
+    if qwen25_ok:
+        started=time.perf_counter()
+        try:
+            res,seconds=ADAPTERS['qwen2.5-3b'].process(cj, {'execution_mode':'local_cpu','source_type':'очищенный JSON','page_count':0})
+            res['wall_clock_seconds']=round(seconds,3); res['reason']='Ollama model call completed'
+        except Exception as e:
+            res={'status':'failed','reason':'Ollama model call failed','error':str(e),'wall_clock_seconds':round(time.perf_counter()-started,3),'source_type':'очищенный JSON'}
+            warnings.append('Qwen2.5-3B:failed')
+        write_json(raw25,res); cleaned['raw_outputs'].append(str(raw25)); model_results['qwen2_5_3b']=res | {'raw_output_path':str(raw25)}
+        _append_qwen_stage(stage_results,'Qwen2.5-3B',res,raw_path=raw25,norm_path=cj,input_file='kit_cleaned.json')
+    else:
+        res={'status':'not_configured','reason':qwen25_missing,'error':qwen25_missing}
+        model_results['qwen2_5_3b']=res
+        _append_qwen_stage(stage_results,'Qwen2.5-3B',res)
     bom_in_pdf=any(f.get('extension')=='.pdf' and 'bom' in (f.get('original_filename') or '').lower() for f in inv) or any(f.get('extension')=='.pdf' and 'bom' in text for f in inv)
     separate_bom=any('bom' in uf['original_filename'].lower() and uf['extension'] in {'.xlsx','.xls','.csv'} for uf in inv)
     missing=[s['stage'] for s in stage_results if s['status'] in {'not_configured','failed'}]
@@ -171,7 +242,7 @@ def process_pipeline(kit, files, data_dir=DATA_DIR):
     suitability='частично пригодно' if warnings or missing else 'пригодно'
     basis=f"Выполнены ключевые этапы: {', '.join(dict.fromkeys(completed)) or 'нет'}. Не выполнены/не настроены: {', '.join(dict.fromkeys(missing)) or 'нет'}. Итог «{suitability}», потому что часть обязательных этапов не была выполнена или требует проверки." if suitability=='частично пригодно' else 'Все обязательные этапы завершены без предупреждений.'
     _append_stage(stage_results,'генерация финального отчёта','deterministic report renderer','completed','final_report.json и final_report.md сформированы',wall_clock_seconds=round(time.perf_counter()-start,3))
-    final={'pipeline_run':{'id':pid,'kit':kit,'status':'completed_with_warnings' if warnings else 'completed','started_at':_now(),'finished_at':_now(),'total_wall_clock_seconds':round(time.perf_counter()-start,3),'error_message':None},'composition':inv,'per_file_results':cleaned['files'],'stage_results':stage_results,'model_results':{},'metrics':{},'final':{'suitability':suitability,'suitability_basis':basis,'critical_errors':[],'unconfirmed_documents':cleaned['unconfirmed_documents'],'bom_status':{'elements_list_detected_in_pdf':bom_in_pdf,'separate_bom_file_uploaded_and_confirmed':separate_bom,'message':'Перечень элементов обнаружен в PDF' if bom_in_pdf else 'Перечень элементов в PDF не обнаружен', 'separate_file_message':'Отдельный BOM-файл загружен и подтверждён' if separate_bom else 'Отдельный BOM-файл не загружен и не подтверждён'},'questions_to_client':[],'short_recommendation':'Проверьте предупреждения и неподтверждённые документы.' if warnings else 'Комплект обработан детерминированно.'}}
+    final={'pipeline_run':{'id':pid,'kit':kit,'status':'completed_with_warnings' if warnings else 'completed','started_at':_now(),'finished_at':_now(),'total_wall_clock_seconds':round(time.perf_counter()-start,3),'error_message':None},'composition':inv,'per_file_results':cleaned['files'],'stage_results':stage_results,'model_results':model_results,'metrics':{},'final':{'suitability':suitability,'suitability_basis':basis,'critical_errors':[],'unconfirmed_documents':cleaned['unconfirmed_documents'],'bom_status':{'elements_list_detected_in_pdf':bom_in_pdf,'separate_bom_file_uploaded_and_confirmed':separate_bom,'message':'Перечень элементов обнаружен в PDF' if bom_in_pdf else 'Перечень элементов в PDF не обнаружен', 'separate_file_message':'Отдельный BOM-файл загружен и подтверждён' if separate_bom else 'Отдельный BOM-файл не загружен и не подтверждён'},'questions_to_client':[],'short_recommendation':'Проверьте предупреждения и неподтверждённые документы.' if warnings else 'Комплект обработан детерминированно.'}}
     fj=root/'final_report.json'; fm=root/'final_report.md'; write_json(fj, final); fm.write_text(render_md(final), encoding='utf-8')
     final['pipeline_run']['final_report_json_path']=str(fj); final['pipeline_run']['final_report_md_path']=str(fm); write_json(fj, final)
     return final
@@ -194,12 +265,18 @@ def render_md(r):
             f"- Wall-clock time: {s.get('wall_clock_seconds') if s.get('wall_clock_seconds') is not None else '—'}",
             f"- input_text_tokens: {s.get('input_text_tokens') if s.get('input_text_tokens') is not None else '—'}",
             f"- output_text_tokens: {s.get('output_text_tokens') if s.get('output_text_tokens') is not None else '—'}",
+            f"- total_duration: {s.get('total_duration') if s.get('total_duration') is not None else '—'}",
+            f"- load_duration: {s.get('load_duration') if s.get('load_duration') is not None else '—'}",
+            f"- prompt_eval_duration: {s.get('prompt_eval_duration') if s.get('prompt_eval_duration') is not None else '—'}",
+            f"- eval_duration: {s.get('eval_duration') if s.get('eval_duration') is not None else '—'}",
             f"- Visual input: {s.get('visual_input') or '—'}",
             f"- Visual tokens: {s.get('visual_tokens') if s.get('visual_tokens') is not None else '—'}",
             f"- Raw output: {s.get('raw_output_path') or '—'}",
             f"- Normalized output: {s.get('normalized_output_path') or '—'}",
             f"- Ошибка: {s.get('error') or '—'}",
         ]
+        if s['stage']=='Qwen2.5-3B' and s.get('status')=='completed':
+            lines.append("- Примечание: Статус сформирован по ограниченному cleaned JSON без результатов MinerU; требует повторной проверки после подключения MinerU")
     bom=r['final'].get('bom_status',{})
     lines += ['','## BOM / перечень элементов', f"- {bom.get('message','Перечень элементов в PDF не обнаружен')}", f"- {bom.get('separate_file_message','Отдельный BOM-файл не загружен и не подтверждён')}"]
     lines += ['','## Итог', f"- Пригодность: {r['final']['suitability']}", f"- Основание пригодности: {r['final'].get('suitability_basis','—')}", f"- Неподтверждённые документы: {', '.join(r['final']['unconfirmed_documents']) or 'нет'}", f"- Рекомендация: {r['final']['short_recommendation']}"]

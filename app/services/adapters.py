@@ -181,7 +181,11 @@ class Qwen3VL8BAdapter(MockBOMMixin, ProcessingAdapter):
             raise ValueError("Qwen3-VL local_cpu accepts only PNG/JPEG images")
         width, height = image_dimensions(file_path)
         image_b64 = base64.b64encode(file_path.read_bytes()).decode("ascii")
-        prompt = metadata.get("prompt") or "Проанализируй изображение страницы или crop-фрагмента КД и верни структурированный результат."
+        prompt = metadata.get("prompt") or (
+            "Проанализируй только видимое изображение первой страницы КД. "
+            "Верни наблюдения: тип страницы, читаемость, видимые таблицы, чертёж/схема, сомнительные фрагменты. "
+            "Не извлекай BOM, не пересчитывай BOM и не делай выводы по невидимым данным."
+        )
         request_payload = {"model": self.model_id, "stream": False, "messages": [{"role": "user", "content": prompt, "images": [image_b64]}]}
         start = time.perf_counter()
         raw = post_ollama_chat(os.getenv("QWEN3_VL_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload)
@@ -212,7 +216,7 @@ class Qwen25_3BAdapter(ProcessingAdapter):
         start = time.perf_counter()
         raw = post_ollama_chat(os.getenv("QWEN25_3B_BASE_URL", DEFAULT_OLLAMA_BASE_URL), request_payload)
         seconds = time.perf_counter() - start
-        return self.base_payload(file_path, metadata, source_type) | {"status": "completed", "raw_ollama_json": raw, "allowed_tasks": self.allowed_tasks, "input_text_tokens": raw.get("prompt_eval_count"), "output_text_tokens": raw.get("eval_count"), "bom_rows": [], "notes": "BOM extraction and recalculation are forbidden for this adapter."}, seconds
+        return self.base_payload(file_path, metadata, source_type) | {"status": "completed", "raw_ollama_json": raw, "allowed_tasks": self.allowed_tasks, "input_text_tokens": raw.get("prompt_eval_count"), "output_text_tokens": raw.get("eval_count"), "total_duration": raw.get("total_duration"), "load_duration": raw.get("load_duration"), "prompt_eval_duration": raw.get("prompt_eval_duration"), "eval_duration": raw.get("eval_duration"), "bom_rows": [], "notes": "Статус сформирован по ограниченному cleaned JSON без результатов MinerU; требует повторной проверки после подключения MinerU"}, seconds
 
     def mock_payload(self, metadata: dict) -> dict:
         return {"allowed_tasks": self.allowed_tasks, "kit_status": "mock: требуется ручная проверка", "found_documents": [], "unconfirmed_documents": [], "risks": ["mock: часть данных не подтверждена"], "questions_to_client": ["mock: подтвердите актуальность комплекта КД"], "short_recommendation": "mock: использовать только после MinerU/Qwen3-VL и очистки JSON/текста", "bom_rows": [], "images_detected": 0, "tables_detected": False, "notes": "Qwen2.5-3B must not extract BOM directly from raw MinerU HTML."}
