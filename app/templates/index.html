@@ -6,6 +6,9 @@
 <section class="upload">
 <h2>Загрузка файла</h2>
 <p>Ollama: {% if ollama_status.available %}доступна{% else %}недоступна — {{ ollama_status.message }}{% endif %} <button type="button" id="check-ollama">Проверить Ollama</button> <span id="ollama-result"></span></p>
+{% if ollama_status.available %}
+<p><small>Найдены модели: {{ ollama_status.models|join(', ') if ollama_status.models else 'нет' }}. {% if ollama_status.missing_models %}Отсутствуют ожидаемые модели: {{ ollama_status.missing_models|join(', ') }}.{% endif %}</small></p>
+{% endif %}
 <form action="/upload" method="post" enctype="multipart/form-data">
 <label>Комплект: <input name="kit" placeholder="Комплект 1" required></label>
 <label>Этап/модель: <select name="stage_model">{% for model in models %}<option value="{{ model }}">{{ model }}</option>{% endfor %}</select></label>
@@ -45,7 +48,13 @@ document.getElementById('check-ollama').addEventListener('click', async () => {
   out.textContent = 'проверка...';
   const response = await fetch('/api/ollama/status');
   const status = await response.json();
-  out.textContent = status.available ? 'Ollama доступна' : (status.message || 'Ollama недоступна по адресу http://127.0.0.1:11434');
+  if (status.available) {
+    const models = (status.models || []).join(', ') || 'нет';
+    const missing = (status.missing_models || []).join(', ');
+    out.textContent = `Ollama доступна; найденные модели: ${models}` + (missing ? `; отсутствуют ожидаемые модели: ${missing}` : '');
+  } else {
+    out.textContent = status.message || 'Ollama недоступна по адресу http://127.0.0.1:11434';
+  }
 });
 </script>
 </body></html>
