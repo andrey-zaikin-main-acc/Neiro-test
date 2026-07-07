@@ -3,7 +3,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES, DEFAULT_OLLAMA_BASE_URL, check_ollama_available
+from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES, DEFAULT_OLLAMA_BASE_URL, OllamaRequestError, check_ollama_available
 from app.services.normalization import normalize_processing_result, write_json
 from app.services.pdf_metadata import inspect_file
 from app.services.repository import create_run, export_runs_csv, list_runs, update_run, create_pipeline_run, create_input_file, list_pipeline_runs
@@ -48,7 +48,7 @@ async def upload_file(kit: str = Form(...), stage_model: str = Form(...), execut
     metadata = metadata | {"execution_mode": execution_mode, "source_type": source_type, "prompt_version": prompt_version, "content_type": file.content_type}
     try:
         raw, seconds = adapter.process(input_path, metadata)
-    except (ValueError, ConnectionError) as exc:
+    except (ValueError, ConnectionError, OllamaRequestError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     normalized = normalize_processing_result(raw)
     stem = Path(original_filename).stem
