@@ -31,6 +31,11 @@ class TestRunBase(BaseModel):
     source_type: str | None = None
     parent_run_id: int | None = None
     prompt_version: str | None = None
+    total_duration: int | None = None
+    load_duration: int | None = None
+    prompt_eval_duration: int | None = None
+    eval_duration: int | None = None
+    quantization: str | None = None
 
 
 class TestRunCreate(TestRunBase):
@@ -55,6 +60,11 @@ class TestRunUpdate(BaseModel):
     source_type: str | None = None
     parent_run_id: int | None = None
     prompt_version: str | None = None
+    total_duration: int | None = None
+    load_duration: int | None = None
+    prompt_eval_duration: int | None = None
+    eval_duration: int | None = None
+    quantization: str | None = None
 
 
 class TestRun(TestRunBase):

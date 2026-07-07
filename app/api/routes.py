@@ -3,9 +3,9 @@ from uuid import uuid4
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES
+from app.services.adapters import ADAPTERS, EXECUTION_MODES, SOURCE_TYPES, DEFAULT_OLLAMA_BASE_URL, check_ollama_available
 from app.services.normalization import normalize_processing_result, write_json
-from app.services.pdf_metadata import inspect_pdf
+from app.services.pdf_metadata import inspect_file
 from app.services.repository import create_run, export_runs_csv, list_runs, update_run
 from app.models.test_run import TestRunUpdate
 
@@ -24,30 +24,29 @@ def index(request: Request):
         "models": list(ADAPTERS.keys()),
         "execution_modes": EXECUTION_MODES,
         "source_types": SOURCE_TYPES,
+        "ollama_status": check_ollama_available(),
     },
 )
 
 
 @router.post("/upload")
-async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), execution_mode: str = Form("mock"), source_type: str | None = Form(None), parent_run_id: int | None = Form(None), prompt_version: str | None = Form(None), file: UploadFile = File(...)):
-    if file.content_type not in {"application/pdf", "application/octet-stream"} and not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+async def upload_file(kit: str = Form(...), stage_model: str = Form(...), execution_mode: str = Form("mock"), source_type: str | None = Form(None), parent_run_id: int | None = Form(None), prompt_version: str | None = Form(None), file: UploadFile = File(...)):
     original_filename = Path(file.filename).name
     run_id = uuid4().hex
     input_path = DATA_DIR / "input" / f"{Path(original_filename).stem}-{run_id}{Path(original_filename).suffix}"
     input_path.parent.mkdir(parents=True, exist_ok=True)
     input_path.write_bytes(await file.read())
-    metadata = inspect_pdf(input_path)
+    metadata = inspect_file(input_path, file.content_type)
     adapter = ADAPTERS.get(stage_model)
     if adapter is None:
         raise HTTPException(status_code=400, detail="Unknown stage/model")
     if execution_mode not in EXECUTION_MODES:
         raise HTTPException(status_code=400, detail="Unknown execution mode")
     source_type = source_type or adapter.default_source_type
-    metadata = metadata | {"execution_mode": execution_mode, "source_type": source_type, "prompt_version": prompt_version}
+    metadata = metadata | {"execution_mode": execution_mode, "source_type": source_type, "prompt_version": prompt_version, "content_type": file.content_type}
     try:
         raw, seconds = adapter.process(input_path, metadata)
-    except ValueError as exc:
+    except (ValueError, ConnectionError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     normalized = normalize_processing_result(raw)
     stem = Path(original_filename).stem
@@ -59,17 +58,24 @@ async def upload_pdf(kit: str = Form(...), stage_model: str = Form(...), executi
     create_run({
         "kit": kit, "stage_model": stage_model, "file_name": original_filename, "file_count": 1,
         "page_count": metadata["page_count"], "image_count": metadata["image_count"], "table_count": metadata["table_count"],
-        "visual_input": describe_visual_input(stage_model, metadata), "visual_tokens": None, "wall_clock_seconds": seconds,
+        "visual_input": describe_visual_input(stage_model, metadata, raw), "visual_tokens": raw.get("visual_tokens"), "wall_clock_seconds": seconds,
         "raw_output_path": str(raw_path), "normalized_output_path": str(normalized_path), "result": raw.get("status", "mock_completed"),
         "critical_errors": 0,
         "provider": adapter.provider, "model_id": adapter.model_id, "model_revision": adapter.model_revision,
         "execution_mode": execution_mode, "source_type": source_type, "parent_run_id": parent_run_id,
         "prompt_version": prompt_version or adapter.prompt_version,
+        "input_text_tokens": raw.get("input_text_tokens"), "output_text_tokens": raw.get("output_text_tokens"),
+        "total_duration": raw.get("total_duration"), "load_duration": raw.get("load_duration"),
+        "prompt_eval_duration": raw.get("prompt_eval_duration"), "eval_duration": raw.get("eval_duration"),
+        "quantization": raw.get("quantization") or adapter.quantization,
     })
     return RedirectResponse("/", status_code=303)
 
 
-def describe_visual_input(stage_model: str, metadata: dict) -> str:
+def describe_visual_input(stage_model: str, metadata: dict, raw: dict | None = None) -> str:
+    if raw and isinstance(raw.get("visual_input"), dict):
+        visual = raw["visual_input"]
+        return f"{visual.get('image_count', 0)} изображений; ширина={visual.get('width')}; высота={visual.get('height')}"
     if stage_model not in {"qwen3-vl", "qwen3-vl-8b"}:
         return "не использовался"
     image_count = metadata.get("image_count") or 0
@@ -102,3 +108,8 @@ def manual_update(run_id: int, input_text_tokens: int | None = Form(None), outpu
 def export_csv():
     path = export_runs_csv(DATA_DIR / "reports" / "test_runs.csv")
     return FileResponse(path, media_type="text/csv", filename="test_runs.csv")
+
+
+@router.get("/api/ollama/status")
+def api_ollama_status():
+    return check_ollama_available(DEFAULT_OLLAMA_BASE_URL)
