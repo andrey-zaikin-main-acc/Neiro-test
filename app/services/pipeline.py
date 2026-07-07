@@ -94,47 +94,84 @@ def parse_xlsx(path):
         sheets.append({'name':ws.title,'max_row':ws.max_row,'max_column':ws.max_column,'merged_cells':[str(r) for r in ws.merged_cells.ranges],'rows':rows,'tables':list(ws.tables.keys())})
     return {'parser_status':'completed','file_name':path.name,'sheets':sheets}
 
-def run_command_stage(cmd, args, raw_dir):
-    if not cmd: return {'status':'not_configured','error':'command is not configured'}
+def run_command_stage(cmd, args, raw_dir, setting_name=None):
+    started=time.perf_counter()
+    if not cmd:
+        missing=f'{setting_name} is not configured' if setting_name else 'command is not configured'
+        return {'status':'not_configured','reason':missing,'error':missing,'wall_clock_seconds':round(time.perf_counter()-started,3)}
     exe=shutil.which(cmd.split()[0])
-    if exe is None and not Path(cmd.split()[0]).exists(): return {'status':'not_configured','error':f'command not found: {cmd}'}
+    if exe is None and not Path(cmd.split()[0]).exists():
+        err=f'command not found: {cmd}'
+        return {'status':'not_configured','reason':err,'error':err,'wall_clock_seconds':round(time.perf_counter()-started,3)}
     try:
         p=subprocess.run(cmd.split()+args, capture_output=True, text=True, timeout=300)
-        return {'status':'completed' if p.returncode==0 else 'failed','returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}
-    except Exception as e: return {'status':'failed','error':str(e)}
+        status='completed' if p.returncode==0 else 'failed'
+        return {'status':status,'reason':'command completed' if status=='completed' else f'command failed with return code {p.returncode}','returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr,'wall_clock_seconds':round(time.perf_counter()-started,3)}
+    except Exception as e:
+        return {'status':'failed','reason':'command raised an exception','error':str(e),'wall_clock_seconds':round(time.perf_counter()-started,3)}
+
+def _stage_result(name, model_parser, status, reason, input_file=None, pages=None, images=None, wall_clock_seconds=None, raw_output_path=None, normalized_output_path=None, error=None, input_text_tokens=None, output_text_tokens=None, visual_input='не использовался', visual_tokens=None):
+    return {'stage':name,'model_parser':model_parser,'status':status,'reason':reason,'input_file':input_file,'page_or_image_count':pages if pages is not None else images,'page_count':pages,'image_count':images,'wall_clock_seconds':wall_clock_seconds,'input_text_tokens':input_text_tokens,'output_text_tokens':output_text_tokens,'visual_input':visual_input,'visual_tokens':visual_tokens,'raw_output_path':raw_output_path,'normalized_output_path':normalized_output_path,'error':error}
+
+def _append_stage(stage_results, *args, **kwargs):
+    res=_stage_result(*args, **kwargs); stage_results.append(res); return res
 
 def process_pipeline(kit, files, data_dir=DATA_DIR):
     start=time.perf_counter(); pid=uuid4().hex; root=data_dir/'pipeline_runs'/pid; raw=root/'raw'; clean=root/'cleaned'; raw.mkdir(parents=True); clean.mkdir()
+    stage_results=[]
     inv=[inventory_file(f|{'pipeline_run_id':pid}) for f in files]
-    write_json(root/'file_manifest.json', {'pipeline_run_id':pid,'kit':kit,'files':inv})
+    manifest_path=root/'file_manifest.json'; write_json(manifest_path, {'pipeline_run_id':pid,'kit':kit,'files':inv})
+    inv_failed=[f for f in inv if f.get('processing_status')=='inventory_failed']
+    _append_stage(stage_results,'первичная инвентаризация','deterministic inventory','failed' if inv_failed else 'completed','инвентаризация завершена с ошибками' if inv_failed else 'инвентаризация загруженных файлов завершена',input_file=', '.join(f['original_filename'] for f in inv) or None,pages=sum((f.get('page_count') or 0) for f in inv) or None,images=sum((f.get('image_count') or 0) for f in inv) or None,normalized_output_path=str(manifest_path),error='; '.join(f"{f['original_filename']}: {f.get('error_message')}" for f in inv_failed) or None)
     cleaned={'pipeline_run_id':pid,'kit':kit,'uploaded_files':inv,'found_documents':[],'unconfirmed_documents':[],'files':[],'potential_bom_rows':[],'images_and_schemes':[],'suspicious_ocr_fragments':[],'data_quality_risks':[],'raw_outputs':[]}
     warnings=[]
+    deterministic_seen=False
     for f in inv:
         fp=Path(f['saved_path']); ext=f['extension']; fr={'input_file_id':f['id'],'file':f['original_filename'],'stages':[]}
         if f['processing_status'].endswith('failed'): warnings.append(f['original_filename'])
         if ext=='.pdf':
-            pp=run_command_stage(os.getenv('PP_DOCLAYOUT_COMMAND',''), [str(fp)], raw); miner=run_command_stage(os.getenv('MINERU_COMMAND',''), [str(fp)], raw)
+            pp=run_command_stage(os.getenv('PP_DOCLAYOUT_COMMAND',''), [str(fp)], raw, 'PP_DOCLAYOUT_COMMAND'); miner=run_command_stage(os.getenv('MINERU_COMMAND',''), [str(fp)], raw, 'MINERU_COMMAND')
             for name,res in [('PP-DocLayout-L',pp),('MinerU 2.5',miner)]:
                 p=raw/f"{f['id']}-{name.replace(' ','_')}.json"; write_json(p,res); cleaned['raw_outputs'].append(str(p)); fr['stages'].append({'stage':name, **res});
+                _append_stage(stage_results,name,name,res['status'],res.get('reason') or res.get('error') or res['status'],input_file=f['original_filename'],pages=f.get('page_count'),images=f.get('image_count'),wall_clock_seconds=res.get('wall_clock_seconds'),raw_output_path=str(p),error=res.get('error') or res.get('stderr'))
                 if res['status']!='completed': warnings.append(f"{f['original_filename']}:{name}:{res['status']}")
                 _record_test_run(kit,pid,f,name,res,str(p))
         elif ext=='.docx':
+            deterministic_seen=True; st=time.perf_counter()
             try:
                 res=parse_docx(fp); status='completed'; cleaned['found_documents'].append({'file':f['original_filename'],'type':'DOCX'})
+                reason='DOCX распарсен детерминированным парсером'
             except Exception as e:
-                res={'parser_status':'failed','error':str(e),'source_file':str(fp)}; status='failed'; warnings.append(f['original_filename'])
+                res={'parser_status':'failed','error':str(e),'source_file':str(fp)}; status='failed'; reason='ошибка детерминированного парсинга DOCX'; warnings.append(f['original_filename'])
             p=clean/f"{f['id']}-docx-cleaned.json"; write_json(p,res); fr['cleaned_json_path']=str(p); fr['cleaned_excerpt']=res; fr['stages'].append({'stage':'deterministic-docx','status':status})
+            _append_stage(stage_results,'PDF/DOCX/XLSX детерминированный парсинг','python-docx zip/xml parser',status,reason,input_file=f['original_filename'],pages=f.get('page_count'),images=f.get('image_count'),wall_clock_seconds=round(time.perf_counter()-st,3),normalized_output_path=str(p),error=res.get('error'))
         elif ext=='.xlsx':
+            deterministic_seen=True; st=time.perf_counter()
             res=parse_xlsx(fp); p=clean/f"{f['id']}-xlsx-cleaned.json"; write_json(p,res); fr['cleaned_json_path']=str(p); fr['stages'].append({'stage':'deterministic-excel','status':res.get('parser_status')}); cleaned['found_documents'].append({'file':f['original_filename'],'type':'XLSX'})
+            _append_stage(stage_results,'PDF/DOCX/XLSX детерминированный парсинг','openpyxl',res.get('parser_status'),'XLSX распарсен детерминированным парсером' if res.get('parser_status')=='completed' else 'ошибка или отсутствие зависимости XLSX-парсера',input_file=f['original_filename'],pages=f.get('sheet_count'),images=f.get('image_count'),wall_clock_seconds=round(time.perf_counter()-st,3),normalized_output_path=str(p),error=res.get('error'))
         elif ext=='.xls':
+            deterministic_seen=True
             res={'parser_status':'not_configured','error':'XLS parser dependency/command is not configured','sheets':[]}; p=clean/f"{f['id']}-xls-cleaned.json"; write_json(p,res); fr['cleaned_json_path']=str(p); fr['stages'].append({'stage':'deterministic-excel','status':'not_configured'}); warnings.append(f['original_filename'])
+            _append_stage(stage_results,'PDF/DOCX/XLSX детерминированный парсинг','XLS parser','not_configured','XLS parser dependency/command is not configured',input_file=f['original_filename'],pages=f.get('sheet_count'),images=f.get('image_count'),normalized_output_path=str(p),error=res.get('error'))
         cleaned['files'].append(fr)
+    if not deterministic_seen:
+        _append_stage(stage_results,'PDF/DOCX/XLSX детерминированный парсинг','deterministic parser','skipped_not_applicable','нет DOCX/XLSX/XLS файлов для детерминированного парсинга')
     # mentions not confirmation
     text=json.dumps(cleaned, ensure_ascii=False).lower()
     for doc in ['gerber','step','pick&place','bom']:
         if doc in text and not any(doc in uf['original_filename'].lower() for uf in inv): cleaned['unconfirmed_documents'].append(doc)
     cj=clean/'kit_cleaned.json'; write_json(cj, cleaned)
-    final={'pipeline_run':{'id':pid,'kit':kit,'status':'completed_with_warnings' if warnings else 'completed','started_at':_now(),'finished_at':_now(),'total_wall_clock_seconds':round(time.perf_counter()-start,3),'error_message':None},'composition':inv,'per_file_results':cleaned['files'],'model_results':{},'metrics':{},'final':{'suitability':'частично пригодно' if warnings else 'пригодно','critical_errors':[],'unconfirmed_documents':cleaned['unconfirmed_documents'],'questions_to_client':[],'short_recommendation':'Проверьте предупреждения и неподтверждённые документы.' if warnings else 'Комплект обработан детерминированно.'}}
+    _append_stage(stage_results,'нормализация без LLM','deterministic JSON normalizer','completed','сформирован нормализованный kit_cleaned.json без LLM',normalized_output_path=str(cj))
+    _append_stage(stage_results,'Qwen3-VL-8B','Qwen3-VL-8B','not_configured','модель не настроена и фактически не запускалась')
+    _append_stage(stage_results,'Qwen2.5-3B','Qwen2.5-3B','not_configured','модель не настроена и фактически не запускалась')
+    bom_in_pdf=any(f.get('extension')=='.pdf' and 'bom' in (f.get('original_filename') or '').lower() for f in inv) or any(f.get('extension')=='.pdf' and 'bom' in text for f in inv)
+    separate_bom=any('bom' in uf['original_filename'].lower() and uf['extension'] in {'.xlsx','.xls','.csv'} for uf in inv)
+    missing=[s['stage'] for s in stage_results if s['status'] in {'not_configured','failed'}]
+    completed=[s['stage'] for s in stage_results if s['status']=='completed']
+    suitability='частично пригодно' if warnings or missing else 'пригодно'
+    basis=f"Выполнены ключевые этапы: {', '.join(dict.fromkeys(completed)) or 'нет'}. Не выполнены/не настроены: {', '.join(dict.fromkeys(missing)) or 'нет'}. Итог «{suitability}», потому что часть обязательных этапов не была выполнена или требует проверки." if suitability=='частично пригодно' else 'Все обязательные этапы завершены без предупреждений.'
+    _append_stage(stage_results,'генерация финального отчёта','deterministic report renderer','completed','final_report.json и final_report.md сформированы',wall_clock_seconds=round(time.perf_counter()-start,3))
+    final={'pipeline_run':{'id':pid,'kit':kit,'status':'completed_with_warnings' if warnings else 'completed','started_at':_now(),'finished_at':_now(),'total_wall_clock_seconds':round(time.perf_counter()-start,3),'error_message':None},'composition':inv,'per_file_results':cleaned['files'],'stage_results':stage_results,'model_results':{},'metrics':{},'final':{'suitability':suitability,'suitability_basis':basis,'critical_errors':[],'unconfirmed_documents':cleaned['unconfirmed_documents'],'bom_status':{'elements_list_detected_in_pdf':bom_in_pdf,'separate_bom_file_uploaded_and_confirmed':separate_bom,'message':'Перечень элементов обнаружен в PDF' if bom_in_pdf else 'Перечень элементов в PDF не обнаружен', 'separate_file_message':'Отдельный BOM-файл загружен и подтверждён' if separate_bom else 'Отдельный BOM-файл не загружен и не подтверждён'},'questions_to_client':[],'short_recommendation':'Проверьте предупреждения и неподтверждённые документы.' if warnings else 'Комплект обработан детерминированно.'}}
     fj=root/'final_report.json'; fm=root/'final_report.md'; write_json(fj, final); fm.write_text(render_md(final), encoding='utf-8')
     final['pipeline_run']['final_report_json_path']=str(fj); final['pipeline_run']['final_report_md_path']=str(fm); write_json(fj, final)
     return final
@@ -145,5 +182,25 @@ def _record_test_run(kit,pid,f,stage,res,raw_path):
 def render_md(r):
     lines=[f"# Итоговый отчёт комплекта {r['pipeline_run']['kit']}", '', f"Статус: {r['pipeline_run']['status']}", '','## Состав комплекта']
     for f in r['composition']: lines.append(f"- {f['original_filename']} ({f['extension']}), страниц: {f.get('page_count')}, листов: {f.get('sheet_count')}, таблиц: {f.get('table_count')}, изображений: {f.get('image_count')}")
-    lines += ['','## Итог', f"- Пригодность: {r['final']['suitability']}", f"- Неподтверждённые документы: {', '.join(r['final']['unconfirmed_documents']) or 'нет'}", f"- Рекомендация: {r['final']['short_recommendation']}"]
+    lines += ['','## Результаты по этапам']
+    for s in r.get('stage_results',[]):
+        lines += [
+            f"### {s['stage']}",
+            f"- Модель / парсер: {s.get('model_parser') or '—'}",
+            f"- Статус: {s.get('status')}",
+            f"- Причина статуса: {s.get('reason') or '—'}",
+            f"- Входной файл: {s.get('input_file') or '—'}",
+            f"- Число страниц или изображений: {s.get('page_or_image_count') if s.get('page_or_image_count') is not None else '—'}",
+            f"- Wall-clock time: {s.get('wall_clock_seconds') if s.get('wall_clock_seconds') is not None else '—'}",
+            f"- input_text_tokens: {s.get('input_text_tokens') if s.get('input_text_tokens') is not None else '—'}",
+            f"- output_text_tokens: {s.get('output_text_tokens') if s.get('output_text_tokens') is not None else '—'}",
+            f"- Visual input: {s.get('visual_input') or '—'}",
+            f"- Visual tokens: {s.get('visual_tokens') if s.get('visual_tokens') is not None else '—'}",
+            f"- Raw output: {s.get('raw_output_path') or '—'}",
+            f"- Normalized output: {s.get('normalized_output_path') or '—'}",
+            f"- Ошибка: {s.get('error') or '—'}",
+        ]
+    bom=r['final'].get('bom_status',{})
+    lines += ['','## BOM / перечень элементов', f"- {bom.get('message','Перечень элементов в PDF не обнаружен')}", f"- {bom.get('separate_file_message','Отдельный BOM-файл не загружен и не подтверждён')}"]
+    lines += ['','## Итог', f"- Пригодность: {r['final']['suitability']}", f"- Основание пригодности: {r['final'].get('suitability_basis','—')}", f"- Неподтверждённые документы: {', '.join(r['final']['unconfirmed_documents']) or 'нет'}", f"- Рекомендация: {r['final']['short_recommendation']}"]
     return '\n'.join(lines)+'\n'

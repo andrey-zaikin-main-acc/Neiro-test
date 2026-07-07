@@ -47,6 +47,24 @@ def test_kd1_pdf_not_configured_models_still_creates_report(tmp_path, monkeypatc
     assert {s['status'] for s in stages}=={'not_configured'}
 
 
+def test_kd1_detailed_final_report_shows_not_configured_layout_and_mineru(tmp_path, monkeypatch):
+    configure(tmp_path, monkeypatch); monkeypatch.delenv('PP_DOCLAYOUT_COMMAND', raising=False); monkeypatch.delenv('MINERU_COMMAND', raising=False)
+    r=pipeline.process_pipeline('КД1',[item(pdf(tmp_path/'kd1.pdf'))], tmp_path/'data')
+    report=json.loads(Path(r['pipeline_run']['final_report_json_path']).read_text(encoding='utf-8'))
+    by_stage={s['stage']:s for s in report['stage_results']}
+    assert by_stage['PP-DocLayout-L']['status']=='not_configured'
+    assert by_stage['PP-DocLayout-L']['error']=='PP_DOCLAYOUT_COMMAND is not configured'
+    assert by_stage['MinerU 2.5']['status']=='not_configured'
+    assert by_stage['MinerU 2.5']['error']=='MINERU_COMMAND is not configured'
+    assert by_stage['Qwen3-VL-8B']['status']=='not_configured'
+    assert by_stage['Qwen2.5-3B']['status']=='not_configured'
+    md=Path(r['pipeline_run']['final_report_md_path']).read_text(encoding='utf-8')
+    assert '## Результаты по этапам' in md
+    assert 'PP_DOCLAYOUT_COMMAND is not configured' in md
+    assert 'MINERU_COMMAND is not configured' in md
+    assert 'Отдельный BOM-файл не загружен и не подтверждён' in md
+
+
 def test_kd2_pdf_xlsx_and_kd3_docx_supported(tmp_path, monkeypatch):
     configure(tmp_path, monkeypatch)
     p=pdf(tmp_path/'a.pdf'); x=xlsx(tmp_path/'bom.xlsx'); d=docx(tmp_path/'manual.docx')
